@@ -1,0 +1,59 @@
+name: Docker Maven Build
+
+# Migrated from: dockermaven/Jenkinsfile
+# Original source: https://github.com/jenkinsci/pipeline-examples (MIT License)
+# Test case: Docker agent and containers
+#
+# The original pipeline ran inside a `maven:3.5.0-jdk-8` Docker agent with
+# `-v /tmp:/tmp -p 8000:8000`. The port mapping is not needed for build/test/package
+# and is dropped; the container image is preserved via `jobs.<job>.container`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: maven:3.5.0-jdk-8
+      volumes:
+        - /tmp:/tmp
+    env:
+      MAVEN_OPTS: '-Xmx2048m'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build
+        run: |
+          mvn --version
+          java -version
+          mvn clean compile
+
+      - name: Test
+        run: mvn test
+
+      - name: Publish test results
+        if: always()
+        uses: dorny/test-reporter@3eeb9fc888e82e8be2fb356bbeec2750231672bc # v1
+        with:
+          name: Maven Test Results
+          path: 'target/surefire-reports/*.xml'
+          reporter: java-junit
+          fail-on-error: false
+
+      - name: Package
+        run: mvn package -DskipTests
+
+      - name: Archive artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: jar-artifacts
+          path: target/*.jar
