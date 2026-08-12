@@ -1,0 +1,99 @@
+name: Laravel GitHub API Pipeline
+
+# Migrated from: laravelgithubapi/Jenkinsfile
+# Original source: https://github.com/faveosuite/faveo-invoicing-community (Educational Use)
+# Test case: Laravel/PHP pipeline with MySQL database setup, testing, and GitHub API integration
+#
+# Credential mapping (Jenkins credentials() -> GitHub Actions secrets):
+#   faveobot            -> secrets.GITHUB_TOKEN (built-in) is used for repo status/PR updates
+#   mysql_credentials_id -> secrets.DB_USER / secrets.DB_PASS
+#
+# Notes:
+#   - `checkout scm` is replaced by actions/checkout.
+#   - The unique per-build database name uses `github.run_number` instead of `BUILD_NUMBER`.
+#   - Commit status reporting and PR closing on failure use the GitHub CLI (`gh`) with the
+#     built-in GITHUB_TOKEN instead of custom curl calls against a personal GitHub credential.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASS }}
+          MYSQL_USER: ${{ secrets.DB_USER }}
+          MYSQL_PASSWORD: ${{ secrets.DB_PASS }}
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASS: ${{ secrets.DB_PASS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@b604ade2a87db23f8871b7182e69ec5e75effb45 # v2
+        with:
+          php-version: '8.2'
+          tools: composer
+
+      - name: Composer Dump-Autoload
+        run: composer dump-autoload
+
+      - name: Database Setup & Testing
+        run: |
+          DB_NAME="billing_${{ github.run_number }}"
+          echo "Creating database $DB_NAME"
+          mysql -h 127.0.0.1 -u "$DB_USER" -p"$DB_PASS" -e "CREATE DATABASE IF NOT EXISTS $DB_NAME;"
+          php artisan optimize:clear
+          php artisan testing-setup --username="$DB_USER" --****** --database="$DB_NAME"
+          COMPOSER_MEMORY_LIMIT=-1 php artisan test
+
+      - name: Drop test database
+        if: always()
+        run: |
+          DB_NAME="billing_${{ github.run_number }}"
+          echo "Dropping database $DB_NAME"
+          mysql -h 127.0.0.1 -u "$DB_USER" -p"$DB_PASS" -e "DROP DATABASE IF EXISTS $DB_NAME;"
+
+      - name: Update commit status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS="success"
+          DESCRIPTION="Build successful"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATUS="failure"
+            DESCRIPTION="Build failed"
+          fi
+          gh api "repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state="$STATUS" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -f description="$DESCRIPTION" \
+            -f context="GitHub Actions"
+
+      - name: Close pull request on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Closing the PR due to build failure..."
+          gh pr close "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}"

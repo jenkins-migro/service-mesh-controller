@@ -1,0 +1,50 @@
+name: Jenkins Plugin Build
+
+# Migrated from: Jenkinsfile
+# Original source: https://github.com/jenkinsci/docker-plugin (MIT License)
+# Test case: Jenkins plugin build with multi-platform testing
+#
+# Original Jenkinsfile used the shared `buildPlugin()` step from
+# https://github.com/jenkins-infra/pipeline-library/, which:
+#   - checks out the repository
+#   - sets up the requested JDK
+#   - runs `mvn -B clean verify` (with tests) on each configured platform/JDK combination
+# This workflow expands that shared library call inline using a build matrix.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }}, JDK ${{ matrix.jdk }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            jdk: 21
+            os: ubuntu-latest
+          - platform: windows
+            jdk: 17
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up JDK ${{ matrix.jdk }}
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+          cache: maven
+
+      - name: Build and verify with Maven
+        run: mvn -B clean verify
