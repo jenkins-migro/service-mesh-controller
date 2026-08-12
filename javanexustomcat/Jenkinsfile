@@ -1,0 +1,87 @@
+<![CDATA[
+// Source: https://github.com/ganesh770924/CICDtestrepo (Educational Use)
+// Test case: Java Maven with SonarQube, Nexus repository, and Tomcat deployment
+pipeline {
+    agent any
+
+    environment {
+        sonarlogin = credentials('sonarqube-token')
+        tomcatcred = credentials('tomcat-user')
+        nexuscred = credentials('nexus-user')
+        
+        NEXUS_VERSION = "nexus3"
+        NEXUS_PROTOCOL = "http"
+        NEXUS_URL = "localhost:8081"
+        NEXUS_REPOSITORY = "java-mvn-CI-repo"
+        NEXUS_CREDENTIAL_ID = "nexus-user"
+    }
+
+    tools {
+        maven 'maven-home'
+        jdk 'jdk8'
+    }
+    
+    stages {
+        stage('Build') {
+            steps {
+                echo 'Hello World'
+                bat label: '', script: 'mvn clean package'
+            }
+        }
+        stage('Sonar Analysis') {
+            steps {
+                bat label: '', script: """mvn clean verify sonar:sonar -Dsonar.host.url=http://localhost:9000 -Dsonar.login=${sonarlogin}"""            
+            }
+        }
+        stage('Store war to Nexus') {
+            steps{
+                script{
+                    pom = readMavenPom file: "pom.xml";
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
+                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
+                    artifactPath = filesByGlob[0].path;
+                    artifactExists = fileExists artifactPath;
+                    
+                    if(artifactExists) {
+                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version}";
+                        nexusArtifactUploader(
+                            nexusVersion: NEXUS_VERSION,
+                            protocol: NEXUS_PROTOCOL,
+                            nexusUrl: NEXUS_URL,
+                            groupId: pom.groupId,
+                            version: pom.version,
+                            repository: NEXUS_REPOSITORY,
+                            credentialsId: NEXUS_CREDENTIAL_ID,
+                            artifacts: [
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: artifactPath,
+                                type: pom.packaging],
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: "pom.xml",
+                                type: "pom"]
+                            ]
+                        );
+                    } else {
+                        error "*** File: ${artifactPath}, could not be found";
+                    }
+                }
+            }
+        } 
+        
+        stage('Pull the file off Nexus') {
+            steps{
+                withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'nexus-user', passwordVariable: 'pw', usernameVariable: 'user']]) {
+                    bat(script: 'curl -L -XGET "http://localhost:8081/service/rest/v1/search/assets/download?sort=version&repository=java-mvn-CI-repo&maven.groupId=com.dev3l.hello_world&maven.artifactId=mvn-hello-world&maven.extension=war" --output JavaMaven.war -u %user%:%pw%')
+                }
+            }
+        }
+        stage ('Deploy on this Server') {
+            steps{
+                deploy adapters: [tomcat9(credentialsId: 'tomcat-user', path: '', url: 'http://localhost:8085/')], contextPath: 'JavaApp', war: '**/*.war'
+            }
+        }
+    }
+}
+    ]]>
